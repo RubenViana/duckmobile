@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 from cv_bridge import CvBridge, CvBridgeError
 from duckietown_msgs.msg import BoolStamped, Pixel, LanePose
+from duckietown_msgs.srv import ChangePattern
 from geometry_msgs.msg import Point
 from sensor_msgs.msg import CompressedImage, Image
-from std_msgs.msg import Float32, Float64MultiArray
+from std_msgs.msg import Float32, Float64MultiArray, String
 import cv2
 import numpy as np
 import os
@@ -13,19 +14,17 @@ import yaml
 from duckietown_utils import (logger, get_duckiefleet_root, load_camera_intrinsics, load_homography)
 from dynamic_obstacle_avoidance.msg import dynamic_obstacle
 
+from duckietown.dtros import DTROS, NodeType, TopicType
 
-class DuckieDetectionNode(object):
 
-    def __init__(self):
-        self.node_name = rospy.get_name()
-        self.robot_name = rospy.get_namespace().strip("/")
+class DuckieDetectionNode(DTROS):
+
+    def __init__(self, node_name):
+        super(DuckieDetectionNode, self).__init__(node_name=node_name, node_type=NodeType.PERCEPTION)
+
         self.bridge = CvBridge()
-        rospack = rospkg.RosPack()
         self.active = True
         self.config = self.setupParam("~config", "baseline")
-        self.publish_freq = self.setupParam("~publish_freq", 2.0)
-        self.publish_duration = rospy.Duration.from_sec(1.0/self.publish_freq)
-        self.last_stamp = rospy.Time.now()
 
         self.publish_debugimg = True #boolean to publish debug image (boundingbox and mask)
         self.lane_width = 0.1145 #half of lane
@@ -36,10 +35,11 @@ class DuckieDetectionNode(object):
 
 
         self.resolution=np.array([0,0])
-        self.resolution[0]=rospy.get_param('/%s/camera_node/res_w' %self.robot_name)
-        self.resolution[1]=rospy.get_param('/%s/camera_node/res_h' %self.robot_name)
+        self.resolution[0]=rospy.get_param('/%s/camera_node/res_w' %rospy.get_namespace().strip("/"))
+        self.resolution[1]=rospy.get_param('/%s/camera_node/res_h' %rospy.get_namespace().strip("/"))
+
         try:
-            self.intrinsics = load_camera_intrinsics(self.robot_name)
+            self.intrinsics = load_camera_intrinsics(rospy.get_namespace().strip("/"))
             self.fx = self.intrinsics['K'][0][0]
             self.fy = self.intrinsics['K'][1][1]
         except KeyError as e:
@@ -47,15 +47,15 @@ class DuckieDetectionNode(object):
             self.intrinsics = {'K': [[0, 0, 0], [0, 0, 0], [0, 0, 0]], 'D': [0, 0, 0, 0, 0]}
             self.fx = self.fy = 1.0
         try:
-            self.H = load_homography(self.robot_name)
+            self.H = load_homography(rospy.get_namespace().strip("/"))
         except KeyError as e:
             rospy.logerr(f"Missing key in homography: {e}")
             self.H = np.eye(3)
         self.Hinv = np.linalg.inv(self.H)
 
         #hsv range for yellow duckies
-        self.yellow_low = np.array([25,180,180])
-        self.yellow_high = np.array([35,255,255])
+        self.yellow_low = np.array([14, 100, 80])
+        self.yellow_high = np.array([35, 255, 255])
 
         self.sub_image = rospy.Subscriber("~image", CompressedImage, self.processImage,
                                             buff_size=921600, queue_size=1)
@@ -65,16 +65,19 @@ class DuckieDetectionNode(object):
 
         self.sub_lane_pose = rospy.Subscriber("~lane_pose", LanePose, self.cbLanePose, queue_size=1)
 
-        self.pub_boundingbox_image = rospy.Publisher("~duckiedetected_image",
-                                                       Image, queue_size=1)
+        self.pub_boundingbox_image = rospy.Publisher("~duckiedetected_image/compressed",
+                                                       CompressedImage, queue_size=1)
 
-        self.pub_mask_image = rospy.Publisher("~duckiedetected_mask",
-                                                      Image, queue_size=1)
+        self.pub_mask_image = rospy.Publisher("~duckiedetected_mask/compressed",
+                                                      CompressedImage, queue_size=1)
         self.pub_time_elapsed = rospy.Publisher("~detection_time",
                                                 Float32, queue_size=1)
 
         self.pub_duckie = rospy.Publisher("~detected_duckie",
                                                 dynamic_obstacle, queue_size=1)
+
+        # self.changePattern = rospy.ServiceProxy("", ChangePattern)
+        # self.last_led_state = None
 
         rospy.loginfo("[%s] Initialization completed" % (self.node_name))
 
@@ -91,12 +94,6 @@ class DuckieDetectionNode(object):
         if not self.active:
             return
 
-        now = rospy.Time.now()
-        if now - self.last_stamp < self.publish_duration:
-            return
-        else:
-            self.last_stamp = now
-
         try:
             cv_image = self.bridge.compressed_imgmsg_to_cv2(
                 image_msg, "bgr8")
@@ -104,6 +101,18 @@ class DuckieDetectionNode(object):
             print(e)
 
         start = rospy.Time.now()
+
+        # hsv_img = cv2.cvtColor(cv_image, cv2.COLOR_BGR2HSV)
+
+        # yellow_mask = cv2.inRange(hsv_img, self.yellow_low, self.yellow_high)
+
+        # #publish debug images
+        # self.pub_mask_image.publish(self.bridge.cv2_to_imgmsg(yellow_mask, "passthrough"))
+
+        # rospy.loginfo("[%s] Image processed" % (self.node_name))
+
+        # elapsed_time = (rospy.Time.now() - start).to_sec()
+        # self.pub_time_elapsed.publish(elapsed_time)
 
         #crop upper percentage and lower 1/4 of image
         cv_image_crop = cv_image[int(cv_image.shape[0]*self.crop_factor):int(cv_image.shape[0]*3/4)][:]
@@ -129,7 +138,7 @@ class DuckieDetectionNode(object):
         params.filterByColor = True
         params.blobColor = 255
         params.filterByArea = True
-        params.minArea = 40
+        params.minArea = 50
         params.filterByInertia = True
         params.minInertiaRatio = 0.5 #if high ratio: only compact blobs are detected, elongated blobs are filtered out
         params.filterByConvexity = False
@@ -157,19 +166,25 @@ class DuckieDetectionNode(object):
                 #calculate distance of duckie to the middle line
                 duckie_side = np.cos(self.phi)*(duckie_loc_world.y+self.d)+np.sin(self.phi)*duckie_loc_world.x
 
+                # rospy.loginfo("[%s] ------- " % (self.node_name))
+                # rospy.loginfo("[%s] Duckie detected at (%f,%f) in pixel coordinates" % (self.node_name,duckie_loc_pix.u,duckie_loc_pix.v))
+                # rospy.loginfo("[%s] Duckie detected at (%f,%f) in world coordinates" % (self.node_name,duckie_loc_world.x,duckie_loc_world.y))
+                # rospy.loginfo("[%s] Duckie detected at %f m to the side of the middle line" % (self.node_name,duckie_side))
+
                 #tracking for outlier prevention: add duckie only if it has been detected already previously close by (within a range of 10cm)
-                for a in range(len(self.duckie_pos_arr_prev)):
-                    dist = np.sqrt((duckie_loc_world.x-self.duckie_pos_arr_prev[a][0])**2+(duckie_loc_world.y-self.duckie_pos_arr_prev[a][1])**2)
-                    prev_detected.append([dist<0.1])
+                # for a in range(len(self.duckie_pos_arr_prev)):
+                #     dist = np.sqrt((duckie_loc_world.x-self.duckie_pos_arr_prev[a][0])**2+(duckie_loc_world.y-self.duckie_pos_arr_prev[a][1])**2)
+                #     prev_detected.append([dist<0.1])
 
                 #check if duckie is on the left or right lane
-                if any(prev_detected):
-                    if abs(duckie_side)<self.lane_width: #right lane
-                        duckie_state_arr.append([1])
-                        duckie_pos_arr.append([duckie_loc_world.x,duckie_loc_world.y])
-                    elif duckie_side>self.lane_width and duckie_side<self.lane_width*3: #left lane
-                        duckie_state_arr.append([2])
-                        duckie_pos_arr.append([duckie_loc_world.x,duckie_loc_world.y])
+                if duckie_loc_pix.u >= 250: #right lane
+                    duckie_state_arr.append([1])
+                    duckie_pos_arr.append([duckie_loc_world.x,duckie_loc_world.y])
+                    rospy.loginfo("[%s] Duckie detected on right lane" % (self.node_name))
+                elif duckie_loc_pix.u < 250: #left lane
+                    duckie_state_arr.append([2])
+                    duckie_pos_arr.append([duckie_loc_world.x,duckie_loc_world.y])
+                    rospy.loginfo("[%s] Duckie detected on left lane" % (self.node_name))
 
                 i=i+1
 
@@ -188,15 +203,27 @@ class DuckieDetectionNode(object):
         if self.publish_debugimg:
             image_msg_out = self.bridge.cv2_to_imgmsg(cv_image_crop,"bgr8")
             image_mask_msg_out = self.bridge.cv2_to_imgmsg(mask,"passthrough")
-            self.pub_boundingbox_image.publish(image_msg_out)
-            self.pub_mask_image.publish(image_mask_msg_out)
+
+            compress_image_msg_out = self.bridge.cv2_to_compressed_imgmsg(cv_image_crop)
+            compress_image_mask_msg_out = self.bridge.cv2_to_compressed_imgmsg(mask)
+
+            self.pub_boundingbox_image.publish(compress_image_msg_out)
+            self.pub_mask_image.publish(compress_image_mask_msg_out)
 
         elapsed_time = (rospy.Time.now() - start).to_sec()
         self.pub_time_elapsed.publish(elapsed_time)
 
+        # try:
+        #     self.trigger_led_hazard_light(
+        #         duckiefound, False
+        #     )
+        # except Exception:
+        #     self.trigger_led_hazard_light(duckiefound, False)
+
     def cbLanePose(self,lane_pose_msg): #callback to lane pose
         self.d = lane_pose_msg.d
         self.phi = lane_pose_msg.phi
+        # rospy.loginfo("[%s] Lane pose received" % (self.node_name))
 
     def pixel2ground(self,pixel):
         uv_raw = np.array([pixel.u, pixel.v])
@@ -210,8 +237,47 @@ class DuckieDetectionNode(object):
         point.y = y/z
         point.z = 0.0
         return point
+    
+    # def trigger_led_hazard_light(self, detection, stopped):
+    #     """
+    #     Publish a service message to trigger the hazard light at the back of the robot
+    #     """
+    #     msg = String()
+
+        # if stopped:
+        #     msg.data = "OBSTACLE_STOPPED"
+        #     if msg.data != self.last_led_state:
+        #         self.changePattern(msg)
+        #     self.last_led_state = msg.data
+        # elif detection:
+        #     msg.data = "OBSTACLE_ALERT"
+        #     if msg.data != self.last_led_state:
+        #         self.changePattern(msg)
+        #     self.last_led_state = msg.data
+        # else:
+        #     if self.state == "LANE_FOLLOWING":
+        #         msg.data = "CAR_DRIVING"
+        #         if msg.data != self.last_led_state:
+        #             self.changePattern(msg)
+        #         self.last_led_state = "CAR_DRIVING"
+        #     elif self.state == "NORMAL_JOYSTICK_CONTROL":
+        #         msg.data = "WHITE"
+        #         if msg.data != self.last_led_state:
+        #             self.changePattern(msg)
+        #         self.last_led_state = msg.data
+
+        # if detection:
+        #     msg.data = "OBSTACLE_ALERT"
+        #     if msg.data != self.last_led_state:
+        #         self.changePattern(msg)
+        #     self.last_led_state = msg.data
+        # else:
+        #     msg.data = "CAR_DRIVING"
+        #     if msg.data != self.last_led_state:
+        #         self.changePattern(msg)
+        #     self.last_led_state = msg.data
 
 if __name__ == '__main__':
-    rospy.init_node('duckie_detection', anonymous=False)
-    duckie_detection_node = DuckieDetectionNode()
+    duckie_detection_node = DuckieDetectionNode(node_name='duckie_detection_node')
+
     rospy.spin()

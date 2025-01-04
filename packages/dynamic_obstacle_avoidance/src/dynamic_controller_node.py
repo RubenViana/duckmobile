@@ -65,10 +65,11 @@ class Dynamic_Controller(DTROS):
 
         # construct publisher
         self.sub_fsm_mode = rospy.Subscriber("~fsm_mode", FSMState, self.cbMode, queue_size=1)
-
         self.sub_duckie = rospy.Subscriber('/%s/duckie_detection_node/detected_duckie' %self.veh_name, dynamic_obstacle, self.cbDuckie, queue_size=1)
         self.sub_car_cmd = rospy.Subscriber("~car_cmd_in", Twist2DStamped, self.cbCarCmd, queue_size=1)
+
         self.car_cmd_pub = rospy.Publisher("~car_cmd", Twist2DStamped, queue_size = 1)
+        self.fsm_mode_pub = rospy.Publisher("~fsm_mode", FSMState, queue_size = 1)
 
     def cbMode(self,fsm_state_msg):
         self.fsm_state = fsm_state_msg.state    # String of current FSM state
@@ -81,14 +82,13 @@ class Dynamic_Controller(DTROS):
 
         if self.duckie_right_state:
             self.duckie_right_pose = msg.pos[2*np.argwhere(state==1)[0][0]] # only x, only take first detected duckie
-            print("duckie right pose: ", self.duckie_right_pose)
-            rospy.loginfo("[%s] duckie right detected" %self.node_name)
+            # rospy.loginfo("[%s] duckie right detected" %self.node_name)
         else:
             self.duckie_right_pose = 0
 
         if self.duckie_left_state:
             self.duckie_left_pose = msg.pos[2*np.argwhere(state==2)[0][0]] # only x, only take first detected duckie
-            rospy.loginfo("[%s] duckie left detected" %self.node_name)
+            # rospy.loginfo("[%s] duckie left detected" %self.node_name)
         else:
             self.duckie_left_pose = 0
 
@@ -102,27 +102,34 @@ class Dynamic_Controller(DTROS):
             car_cmd_msg_current.v = 0
         self.stop_prev = self.stop
         self.car_cmd_pub.publish(car_cmd_msg_current)
+        rospy.loginfo("[%s] car_cmd published" %self.node_name)
 
     # function which decides when to overtake or stop
     def overwatch(self):
+        self.stop = False
         if self.fsm_state == "LANE_FOLLOWING" and not self.overtaking:
-            if self.back_state or self.duckie_right_state: # checking for obstacles on right lane (duckiebot or duckie)
-                if not (self.head_state or self.duckie_left_state): # checking for obstacles on left lane (duckiebot or duckie)
-                    if self.back_state and not self.static: # stay longer on the left lane if overtaking a duckiebot (which we assume is moving)
-                        self.leftlane_time = 4
-                        self.dist_max = 0.7
-                    else:
-                        self.leftlane_time = 2
-                        self.dist_max = 1.0
-                    if (self.back_veh_pose > 0.15 and self.back_veh_pose < self.dist_max) or (self.duckie_right_pose > 0.15 and self.duckie_right_pose < self.dist_max): # checking if obstacles in overtaking range
-                        self.overtake()
+            if self.duckie_left_state or self.duckie_right_state:
+                self.stop = True
+                rospy.logerr("[%s] Emergency stop!" % self.node_name)
+                self.fsm_mode_pub.publish(FSMState(state="NORMAL_JOYSTICK_CONTROL"))
+                
 
-                # checking if obstacles to close --> emergency stop
-                if (self.back_veh_pose < 0.15 and self.back_state) or (self.duckie_right_pose < 0.15 and self.duckie_right_state):
-                    rospy.logerr("[%s] Emergency stop!" % self.node_name)
-                    self.stop = True
-                else:
-                    self.stop = False
+
+
+
+            # if self.duckie_right_state: # checking for obstacles on right lane (duckiebot or duckie)
+            #     if not (self.duckie_left_state): # checking for obstacles on left lane (duckiebot or duckie)
+            #         self.leftlane_time = 2
+            #         self.dist_max = 1.0
+            #         if (self.duckie_right_pose > 0.15 and self.duckie_right_pose < self.dist_max): # checking if obstacles in overtaking range
+            #             self.overtake()
+
+            #     # checking if obstacles to close --> emergency stop
+            #     if (self.back_veh_pose < 0.15 and self.back_state) or (self.duckie_right_pose < 0.15 and self.duckie_right_state):
+            #         rospy.logerr("[%s] Emergency stop!" % self.node_name)
+            #         self.stop = True
+            #     else:
+            #         self.stop = False
 
     # overtaking by adjusting d_offset
     def overtake(self):
