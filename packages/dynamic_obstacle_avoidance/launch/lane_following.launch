@@ -9,22 +9,26 @@
 		<arg name="veh" value="$(arg veh)"/>
 		<arg name="demo_name" value="lane_following"/>
 		<arg name="visualization" default="true" />
-    	<arg name="/camera/raw" default="true" />
+    	<!-- <arg name="/camera/raw" default="true" /> -->
 		<arg name="param_file_name" default="default" />
 		<arg name="line_detector_param_file_name" default="default" />
-		<!-- <arg name="anti_instagram" default="true" /> -->
+		<arg name="anti_instagram" default="true" />
 		<arg name="ai_trafo_mode" value="$(arg ai_trafo_mode)"/>
 		<arg name="ai_interval" value="$(arg ai_interval)"/>
 		<arg name="/lane_following/stop_line_filter" default="false" /> <!-- will not every allow a transition into COORDINATION mode -->
 		<arg name="vehicle_avoidance" default="false"/>
 		<arg name="/vehicle_avoidance/control" default="false"/> <!--set to false so that we can activate our own overtake controller-->
 
+
+		<arg name="fsm" value="true"/>
+	    <arg name="/fsm/logic_gate" value="false"/>
+
 		<!-- Lane Following stack -->
-	    <!-- <arg name="lane_following" value="true"/>
+	    <arg name="lane_following" value="true"/>
 	    <arg name="/lane_following/line_detection" value="true"/>
 	    <arg name="/lane_following/ground_projection" value="true"/>
 	    <arg name="/lane_following/lane_filter" value="true"/>
-	    <arg name="/lane_following/lane_controller" value="true"/> -->
+	    <arg name="/lane_following/lane_controller" value="true"/>
 	    <!-- <arg name="LED" value="true"/>
 	    <arg name="/LED/emitter" value="true"/> -->
 	</include>

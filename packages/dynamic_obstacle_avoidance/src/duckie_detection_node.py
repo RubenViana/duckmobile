@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 from cv_bridge import CvBridge, CvBridgeError
-from duckietown_msgs.msg import BoolStamped, Pixel, LanePose
+from duckietown_msgs.msg import BoolStamped, Pixel, LanePose, SegmentList
 from duckietown_msgs.srv import ChangePattern
 from geometry_msgs.msg import Point
 from sensor_msgs.msg import CompressedImage, Image, CameraInfo
@@ -10,7 +10,6 @@ import cv2
 import numpy as np
 import rospy
 import yaml
-from duckietown_utils import (logger, get_duckiefleet_root, load_camera_intrinsics, load_homography)
 from dynamic_obstacle_avoidance.msg import dynamic_obstacle
 
 from duckietown.dtros import DTROS, NodeType, TopicType
@@ -37,9 +36,9 @@ class DuckieDetectionNode(DTROS):
         self.pcm = PinholeCameraModel()
         # self.H = load_homography(rospy.get_namespace().strip("/"))  # load_homography not working! so hardcoded
         self.H = np.array([
-            [-0.00015389980014132867, 0.00033474595519600086, 0.3198466654067245],
-            [-0.0013999151846608236, -1.316249553467081e-05, 0.43310887263768993],
-            [-0.00039075225726160825, 0.010959818387184139, -1.5504152912606086]
+            [9.589494129005423e-05, 0.00027220816758772405, 0.2084990662752807],
+            [-0.0010031454552831705, 2.3621573386148955e-05, 0.2622502366798602],
+            [0.0003845028629454141, 0.008649039639578485, -1.1762140083597403]
         ])
 
         self.resolution=np.array([0,0])
@@ -50,6 +49,10 @@ class DuckieDetectionNode(DTROS):
         self.yellow_low = np.array([14, 100, 80]) # np.array([103, 140, 140])
         self.yellow_high = np.array([35, 255, 255]) # np.array([123, 190, 190])
 
+        self.red_low_1 = np.array([0,140,100])
+        self.red_high_1 = np.array([15,255,255])
+        self.red_low_2 = np.array([165,140,100])
+        self.red_high_2 = np.array([180,255,255])
 
         self.sub_image = rospy.Subscriber("~image", CompressedImage, self.processImage,
                                             buff_size=921600, queue_size=1)
@@ -68,6 +71,7 @@ class DuckieDetectionNode(DTROS):
 
         self.pub_mask_image = rospy.Publisher("~duckiedetected_mask/compressed",
                                                       CompressedImage, queue_size=1)
+        
         self.pub_time_elapsed = rospy.Publisher("~detection_time",
                                                 Float32, queue_size=1)
 
@@ -91,6 +95,12 @@ class DuckieDetectionNode(DTROS):
     def processImage(self, image_msg):
         if not self.active:
             return
+        
+        now = rospy.Time.now()
+        if now - self.last_stamp < self.publish_duration:
+            return
+        else:
+            self.last_stamp = now
 
         try:
             cv_image = self.bridge.compressed_imgmsg_to_cv2(
@@ -100,12 +110,51 @@ class DuckieDetectionNode(DTROS):
 
         start = rospy.Time.now()
 
-        #crop upper percentage and lower 1/4 of image
+        # #crop upper percentage and lower 1/4 of image
         cv_image_crop = cv_image[int(cv_image.shape[0]*self.crop_factor):int(cv_image.shape[0]*3/4)][:]
         hsv_img = cv2.cvtColor(cv_image_crop, cv2.COLOR_BGR2HSV)
 
         #create a yellow mask
-        mask = cv2.inRange(hsv_img, self.yellow_low, self.yellow_high)
+        mask = cv2.inRange(hsv_img, self.red_low_1, self.red_high_1)
+        mask += cv2.inRange(hsv_img, self.red_low_2, self.red_high_2)
+
+        # # Apply morphological operations to remove noise
+        # kernel = np.ones((5,5), np.uint8)
+        # mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
+        # mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
+        
+        # # Find contours in the mask
+        # contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        
+        # # Process detected contours
+        # for contour in contours:
+        #     # adjust for crop
+        #     contour[:,0,1] += int(cv_image.shape[0]*self.crop_factor)
+
+        #     area = cv2.contourArea(contour)
+        #     perimeter = cv2.arcLength(contour, True)
+            
+        #     # Calculate circularity
+        #     circularity = 4 * np.pi * area / (perimeter * perimeter) if perimeter > 0 else 0
+            
+        #     # Calculate aspect ratio
+        #     x, y, w, h = cv2.boundingRect(contour)
+            
+        #     # Filter based on shape characteristics
+        #     # Duck should be somewhat circular and have aspect ratio close to 1
+        #     if (area > 10 and area < 5000 and  # Size constraints
+        #         circularity > 0.5):      # Height and width should be similar
+                
+        #         # Draw rectangle around the duck
+        #         cv2.rectangle(cv_image_crop, (x, y), (x + w, y + h), (0, 255, 0), 2)
+
+
+        # for segment in self.segments:
+        #     if segment.color == "yellow":
+        #         cv2.rectangle(cv_image_crop, segment.points[0], segment.points[1], (255, 0, 0), 2)
+
+        # self.pub_boundingbox_image.publish(self.bridge.cv2_to_compressed_imgmsg(cv_image_crop))
+        # self.pub_mask_image.publish(self.bridge.cv2_to_compressed_imgmsg(mask))
 
         # TODO: improve duckie detection
 
@@ -116,7 +165,7 @@ class DuckieDetectionNode(DTROS):
         duckie_pos_arr = []
         duckie_pos_arr_new = []
         duckie_state_arr = []
-        keypoints=[]
+        # keypoints=[]
         prev_detected=[]
         i=0
 
@@ -126,7 +175,7 @@ class DuckieDetectionNode(DTROS):
         params.filterByColor = True
         params.blobColor = 255
         params.filterByArea = True
-        params.minArea = 60
+        params.minArea = 10
         params.filterByInertia = True
         params.minInertiaRatio = 0.5 #if high ratio: only compact blobs are detected, elongated blobs are filtered out
         params.filterByConvexity = False
@@ -145,14 +194,15 @@ class DuckieDetectionNode(DTROS):
             duckiefound = True
             for key in keypoints:
                 duckie_loc_pix.u=key.pt[0]
-                duckie_loc_pix.v=key.pt[1]+key.size/2+float(self.resolution[1])*self.crop_factor #to compensate for crop
+                duckie_loc_pix.v=key.pt[1]+key.size/2+float(self.resolution[1]*self.crop_factor)
 
                 #project duckie location to ground
                 duckie_loc_world = self.pixel2ground(duckie_loc_pix)
-                duckie_pos_arr_new.append([duckie_loc_world.x,duckie_loc_world.y])
 
                 #calculate distance of duckie to the middle line
                 duckie_side = np.cos(self.phi)*(duckie_loc_world.y+self.d)+np.sin(self.phi)*duckie_loc_world.x
+
+                duckie_pos_arr_new.append([duckie_loc_world.x,duckie_loc_world.y])
 
                 # rospy.loginfo("[%s] ------- " % (self.node_name))
                 # rospy.loginfo("[%s] Duckie detected at (%f,%f) in pixel coordinates" % (self.node_name,duckie_loc_pix.u,duckie_loc_pix.v))
@@ -189,8 +239,6 @@ class DuckieDetectionNode(DTROS):
 
 
 
-        # image_msg_out = self.bridge.cv2_to_imgmsg(cv_image_crop,"bgr8")
-        # image_mask_msg_out = self.bridge.cv2_to_imgmsg(mask,"passthrough")
         compress_image_msg_out = self.bridge.cv2_to_compressed_imgmsg(cv_image_crop)
         compress_image_mask_msg_out = self.bridge.cv2_to_compressed_imgmsg(mask)
 

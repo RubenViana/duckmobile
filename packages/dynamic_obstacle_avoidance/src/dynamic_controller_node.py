@@ -25,6 +25,7 @@ class Dynamic_Controller(DTROS):
         self.lanewidth = 0.22   #m, width of one lane
         self.leftlane_time = 3  #sec, time spent on left lane during overtaking
 
+
         # variable definition and initialisation
         self.stop = False
         self.stop_prev = False
@@ -63,7 +64,10 @@ class Dynamic_Controller(DTROS):
 
         self.led_pattern_srv(self.led_pattern)
 
-        
+        self.last_stop_time = rospy.Time.now()  
+
+        self.led_states = ["drive", "signal_left", "signal_right", "stop", "emergency_stop"]
+        self.current_index = 0
 
         rospy.loginfo("[%s] initialized" %self.node_name)
 
@@ -90,9 +94,6 @@ class Dynamic_Controller(DTROS):
 
     # velocity and omega of car_cmd are set to zero if there is a stop
     def cbCarCmd(self, car_cmd_msg):
-
-        self.overwatch()    # execute overwatch
-
         car_cmd_msg_current = Twist2DStamped()
         car_cmd_msg_current = car_cmd_msg
         car_cmd_msg_current.header.stamp = rospy.Time.now()
@@ -100,53 +101,50 @@ class Dynamic_Controller(DTROS):
             car_cmd_msg_current.omega = 0
             car_cmd_msg_current.v = 0
         self.stop_prev = self.stop
+        # if self.stop and (rospy.Time.now() - self.last_stop_time).to_sec() < 2:
+        #     car_cmd_msg_current.omega = 0
+        #     car_cmd_msg_current.v = 0
         self.car_cmd_pub.publish(car_cmd_msg_current)
-        rospy.loginfo("[%s] car_cmd published: %f" % (self.node_name, car_cmd_msg_current.v))
+        # rospy.loginfo("[%s] car_cmd published: %f" % (self.node_name, car_cmd_msg_current.v))
 
     # function which decides when to overtake or stop
     def overwatch(self):
 
-        # ONLY FOR TESTING THE LIGHTS
-        # if self.duckie_left_state and self.duckie_left_pose > 0.3:
-        #     self.set_led_state("signal_left")
-        # elif self.duckie_right_state and self.duckie_right_pose > 0.3:
-        #     self.set_led_state("signal_right")
-        # elif self.duckie_right_pose < 0.30:
-        #     self.set_led_state("reverse")
-        # elif self.duckie_left_pose < 0.30:
-        #     self.set_led_state("emergency_stop")
-        # elif not (self.duckie_left_state or self.duckie_right_state):
-        #     self.set_led_state("drive")
+        # self.set_led_state(self.led_states[self.current_index])
+        # self.current_index = (self.current_index + 1) % len(self.led_states)
+        # rospy.sleep(5)
 
+        if rospy.Time.now() - self.last_stop_time > rospy.Duration(2):
+            self.stop = False
+            self.set_led_state("drive")
 
-        self.stop = False
-        self.set_led_state("drive")
+        # self.stop = False
+        # self.set_led_state("drive")
 
-        if self.fsm_state == "LANE_FOLLOWING":
-            if self.duckie_right_state:
-                rospy.logerr("[%s] Stop!" % self.node_name)
-                self.stop = True
-                self.set_led_state("stop")
+        # if self.fsm_state == "LANE_FOLLOWING":
+        #     if self.duckie_right_state and self.duckie_left_state:
+        #         rospy.logerr("[%s] Stop!" % self.node_name)
+        #         self.stop = True
+        #         self.stop_prev = True
+        #         self.last_stop_time = rospy.Time.now()
+        #         self.set_led_state("emergency_stop")
 
-            elif self.duckie_left_state:
-                rospy.logerr("[%s] Emergency Stop!" % self.node_name)
-                self.stop = True
-                self.set_led_state("emergency_stop")
-
-        # if self.fsm_state == "LANE_FOLLOWING" and not self.overtaking:
-        #     if self.duckie_right_state: # checking for duckies on right lane
-        #         if not (self.duckie_left_state): # checking for duckies on left lane
-        #             self.leftlane_time = 2
-        #             self.dist_max = 1.0
-        #             if (self.duckie_right_pose > 0.15 and self.duckie_right_pose < self.dist_max): # checking if duckie in overtaking range
-        #                 self.overtake()
-        #         # if self.duckie_left_state: # MAYBE IMPLEMENT 'inversao de marcha'!   
-        #         if (self.duckie_right_pose < 0.15 and self.duckie_right_state): # checking if duckie to close
-        #             rospy.logerr("[%s] Stop!" % self.node_name)
-        #             self.set_led_state("stop")
-        #             self.stop = True
-        #         else:
-        #             self.stop = False
+        if self.fsm_state == "LANE_FOLLOWING" and not self.overtaking:
+            if self.duckie_right_state: # checking for duckies on right lane
+                if not (self.duckie_left_state): # checking for duckies on left lane
+                    self.leftlane_time = 2
+                    self.dist_max = 1.0
+                    if (self.duckie_right_pose > 0.20 and self.duckie_right_pose < self.dist_max): # checking if duckie in overtaking range
+                        self.overtake()
+                # if self.duckie_left_state: # MAYBE IMPLEMENT 'inversao de marcha'!   
+                if (self.duckie_right_pose < 0.20 and self.duckie_right_state): # checking if duckie to close
+                    rospy.logerr("[%s] Stop!" % self.node_name)
+                    self.set_led_state("stop")
+                    self.stop = True
+                    # self.last_stop_time = rospy.Time.now()
+                else:
+                    self.stop = False
+                    self.set_led_state("drive")
 
     # overtaking by adjusting d_offset
     def overtake(self):
@@ -170,11 +168,12 @@ class Dynamic_Controller(DTROS):
             if self.duckie_left_state: #stop if duckie are facing us on left lane
                 rospy.logerr("[%s] Emergency stop while overtaking!" % self.node_name)
                 self.set_led_state("emergency_stop")
-                self.stop_prev = True
+                self.last_stop_time = rospy.Time.now()
                 self.stop = True
-                while self.stop_prev or self.stop:
+                while self.stop and (rospy.Time.now() - self.last_stop_time).to_sec() < 2:
                     if self.duckie_left_state:
                         self.stop = True
+                        self.last_stop_time = rospy.Time.now()
                     else:
                         self.stop = False
                     rospy.sleep(0.5)
@@ -247,7 +246,7 @@ class Dynamic_Controller(DTROS):
 
     def run(self):
         # run at 50Hz
-        rate = rospy.Rate(50) # Previous value was 50! (in case needed for debugging)
+        rate = rospy.Rate(50) 
         while not rospy.is_shutdown():
             self.overwatch()    # execute overwatch
             # rospy.loginfo("FSM STATE: %s" %self.fsm_state)
@@ -256,6 +255,6 @@ if __name__ == '__main__':
     # create the node
     node = Dynamic_Controller(node_name='dynamic_controller_node')
     # run node
-    # node.run()
+    node.run()
     # keep spinning
     rospy.spin()
